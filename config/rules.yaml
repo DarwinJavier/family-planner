@@ -1,0 +1,19 @@
+event_types:
+  sports:
+    keywords: [basketball, soccer, practice, training, game, match, volleyball, baseball, football, hockey, tennis, swimming, gym]
+    reminder_minutes_before: 60
+  exam:
+    keywords: [exam, test, quiz, midterm, final, prueba, examen, evaluación]
+    reminder_minutes_before: 60
+  grocery:
+    keywords: [costco, grocery, supermarket, walmart, metro, sobeys, loblaws, food, compras, mercado]
+    reminder_minutes_before: 60
+
+  pickup_required:
+    keywords: [basketball, soccer, practice, game, training, school, class, match, volleyball, baseball, hockey, tennis, swimming]
+
+notifications:
+  morning_briefing_time: "05:45"
+  pre_event_check_interval_minutes: 30
+  reminder_window_minutes: [60, 90]
+  timezone: America/Toronto

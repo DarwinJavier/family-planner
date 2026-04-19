@@ -1,0 +1,24 @@
+[project]
+name = "family-agent"
+version = "0.1.0"
+description = "Family planner bot, scheduler, and agent tools."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.54.0",
+    "apscheduler>=3.10.4",
+    "google-api-python-client>=2.169.0",
+    "google-auth-oauthlib>=1.2.0",
+    "httpx>=0.28.1",
+    "openai>=2.32.0",
+    "python-dotenv>=1.0.1",
+    "python-telegram-bot[job-queue]>=22.0",
+    "pyyaml>=6.0.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = false
