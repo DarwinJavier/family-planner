@@ -28,9 +28,17 @@ def get_credentials() -> Credentials:
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            logger.info("Refreshing expired Google OAuth token.")
-            creds.refresh(Request())
-        else:
+            try:
+                logger.info("Refreshing expired Google OAuth token.")
+                creds.refresh(Request())
+            except Exception as e:
+                # Token revoked or invalid — delete it and re-run the full OAuth flow
+                logger.warning("Token refresh failed (%s). Re-running OAuth consent flow.", e)
+                if os.path.exists(TOKEN_FILE):
+                    os.remove(TOKEN_FILE)
+                creds = None
+
+        if not creds:
             logger.info("Starting Google OAuth consent flow.")
             flow = InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
             creds = flow.run_local_server(port=0)

@@ -1,11 +1,36 @@
 import logging
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 from bot.handlers import build_application
 from scheduler.jobs import start_scheduler
 
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    level=logging.INFO,
-)
+
+def configure_logging() -> None:
+    """Log to both the terminal and the rotating app log file."""
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+
+    file_handler = TimedRotatingFileHandler(
+        log_dir / "family-agent.log",
+        when="midnight",
+        backupCount=7,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
+
+    root.handlers.clear()
+    root.addHandler(console_handler)
+    root.addHandler(file_handler)
+
+
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
