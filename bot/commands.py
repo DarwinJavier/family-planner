@@ -1,8 +1,10 @@
 """Telegram slash command handlers: /today, /week, /list, /help."""
+import html
 import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import os
+from urllib.parse import urlparse
 from telegram import Update
 from telegram.ext import ContextTypes
 from gcal.client import get_events
@@ -13,6 +15,22 @@ logger = logging.getLogger(__name__)
 
 def _tz() -> ZoneInfo:
     return ZoneInfo(os.environ.get("TIMEZONE", "America/Toronto"))
+
+
+def _is_google_calendar_link(url: str | None) -> bool:
+    if not url:
+        return False
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    return parsed.scheme == "https" and host in {"calendar.google.com", "www.google.com", "google.com"}
+
+
+def _event_label(event: dict) -> str:
+    title = html.escape(event.get("summary", "(no title)"))
+    link = event.get("htmlLink")
+    if _is_google_calendar_link(link):
+        return f'<a href="{html.escape(link, quote=True)}">{title}</a>'
+    return title
 
 
 def _format_events(events: list[dict], tz: ZoneInfo) -> str:
@@ -26,7 +44,7 @@ def _format_events(events: list[dict], tz: ZoneInfo) -> str:
             time_str = dt.strftime("%I:%M %p").lstrip("0")
         else:
             time_str = "all day"
-        lines.append(f"  • {time_str} — {e.get('summary', '(no title)')}")
+        lines.append(f"  • {time_str} — {_event_label(e)}")
     return "\n".join(lines)
 
 
@@ -47,8 +65,8 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     date_str = now.strftime("%A, %B %d")
-    text = f"📅 *{date_str}*\n\n{_format_events(events, tz)}"
-    await update.message.reply_text(text, parse_mode="Markdown")
+    text = f"📅 <b>{html.escape(date_str)}</b>\n\n{_format_events(events, tz)}"
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -82,13 +100,13 @@ async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Nothing on the calendar this week — enjoy the break! 😎")
         return
 
-    lines = ["📅 *This week:*\n"]
+    lines = ["📅 <b>This week:</b>\n"]
     for day, day_events in days.items():
-        lines.append(f"*{day}*")
+        lines.append(f"<b>{html.escape(day)}</b>")
         lines.append(_format_events(day_events, tz))
         lines.append("")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -113,11 +131,11 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("The shopping list is empty. Add something, pana! 🛒")
         return
 
-    bullet_list = "\n".join(f"• {i}" for i in items)
-    event_title = event.get("summary", "grocery run")
+    bullet_list = "\n".join(f"• {html.escape(i)}" for i in items)
+    event_title = _event_label(event)
     await update.message.reply_text(
-        f"🛒 *Shopping list* (for {event_title}):\n\n{bullet_list}",
-        parse_mode="Markdown",
+        f"🛒 <b>Shopping list</b> (for {event_title}):\n\n{bullet_list}",
+        parse_mode="HTML",
     )
 
 

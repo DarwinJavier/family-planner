@@ -3,6 +3,7 @@ token.json
 credentials.json
 logs/*.log
 logs/*.log.*
+storage/proactivity_state.json
 __pycache__/
 .pytest_cache/
 .venv/

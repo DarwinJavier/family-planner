@@ -1,10 +1,12 @@
 import os
 import logging
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from agent.brain import process_message
 from storage.memory import get_history, append_history
+from storage.proactivity import record_conversation_turn
 from bot.commands import cmd_today, cmd_week, cmd_list, cmd_help
 
 load_dotenv()
@@ -16,6 +18,10 @@ def _family_chat_id() -> int:
     if not chat_id:
         raise RuntimeError("FAMILY_CHAT_ID is not set in .env")
     return int(chat_id)
+
+
+def _tz() -> ZoneInfo:
+    return ZoneInfo(os.environ.get("TIMEZONE", "America/Toronto"))
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -41,8 +47,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     history = get_history(user_id)
     try:
-        reply, updated_history = process_message(user_text, history)
+        reply, updated_history = process_message(
+            user_text,
+            history,
+            user_name=user_name,
+            user_id=user_id,
+        )
         append_history(user_id, updated_history)
+        record_conversation_turn(user_id, user_name, user_text, reply, _tz())
     except Exception as e:
         logger.error("Agent error for user %s: %s", user_id, e, exc_info=True)
         reply = "Sorry, I ran into a problem. Try again in a moment."

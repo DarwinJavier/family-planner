@@ -1,16 +1,52 @@
 """Tool definitions and handlers for the agent's calendar interactions."""
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import os
 import logging
+import re
+from urllib.parse import urlparse
 from dotenv import load_dotenv
+from openai import OpenAI
 import yaml
 from pathlib import Path
 from gcal.client import get_events, create_event, delete_event, update_event, get_overlapping_events
+from agent.enrichment import enrich_event
 from storage.shopping_list import read_shopping_list, write_shopping_list
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+RESEARCH_MODEL = os.environ.get("OPENAI_RESEARCH_MODEL", "gpt-4o")
+
+TRUSTED_LINK_DOMAINS = [
+    "canada.ca",
+    "ontario.ca",
+    "ottawa.ca",
+    "ottawapublichealth.ca",
+    "cheo.on.ca",
+    "mayoclinic.org",
+    "cdc.gov",
+    "who.int",
+    "healthychildren.org",
+    "khanacademy.org",
+    "britannica.com",
+    "wikipedia.org",
+    "reuters.com",
+    "apnews.com",
+    "bbc.com",
+    "cbc.ca",
+    "ctvnews.ca",
+    "theweathernetwork.com",
+    "weather.gc.ca",
+    "google.com",
+    "youtube.com",
+    "spotify.com",
+    "goodreads.com",
+    "commonsensemedia.org",
+    "openai.com",
+    "microsoft.com",
+    "apple.com",
+]
 
 # Tool schemas in OpenAI function-calling format.
 TOOL_DEFINITIONS = [
@@ -167,7 +203,241 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "research_question",
+            "description": (
+                "Research a factual question with web search before answering. "
+                "Use this for current events, local details, prices, schedules, products, medical/general health facts, "
+                "travel, sports, technology, laws, or any random question where the base model may be stale. "
+                "Do not use this to expose private family calendar details."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The user's factual question to research.",
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Preferred answer language, e.g. English or Spanish.",
+                    },
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recommend_for_calendar",
+            "description": (
+                "Read calendar events in a date range and return practical family-assistant recommendations: "
+                "when to leave, what to prepare, possible conflicts, supplies, and useful event context. "
+                "Use when the user asks for planning help, preparation, priorities, logistics, or how to handle a day/week."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start of the range in ISO 8601 format, e.g. '2026-05-17'",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End of the range (exclusive) in ISO 8601 format, e.g. '2026-05-18'",
+                    },
+                    "focus": {
+                        "type": "string",
+                        "description": "Optional planning focus, such as morning routine, sports, school, errands, or conflicts.",
+                    },
+                },
+                "required": ["start_date", "end_date"],
+            },
+        },
+    },
 ]
+
+
+def _sanitize_text(text: str, max_length: int = 900) -> str:
+    text = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", text or "")
+    text = " ".join(text.split())
+    return text[:max_length]
+
+
+def _extract_response_text(response) -> str:
+    for item in response.output:
+        if item.type == "message":
+            for content in item.content:
+                if content.type == "output_text":
+                    return content.text.strip()
+    return ""
+
+
+def _is_trusted_https_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return False
+    host = parsed.netloc.lower().split("@")[-1].split(":")[0]
+    return any(host == domain or host.endswith(f".{domain}") for domain in TRUSTED_LINK_DOMAINS)
+
+
+def _strip_untrusted_links(text: str) -> str:
+    """Remove links that are not HTTPS links on known trusted domains."""
+    markdown_link_re = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+    bare_url_re = re.compile(r"https?://[^\s)>\]]+")
+
+    def replace_markdown(match: re.Match) -> str:
+        label = match.group(1)
+        url = match.group(2)
+        return match.group(0) if _is_trusted_https_url(url) else label
+
+    text = markdown_link_re.sub(replace_markdown, text)
+
+    def replace_bare(match: re.Match) -> str:
+        url = match.group(0).rstrip(".,;:")
+        suffix = match.group(0)[len(url):]
+        return f"{url}{suffix}" if _is_trusted_https_url(url) else ""
+
+    return bare_url_re.sub(replace_bare, text).strip()
+
+
+def _research_question(question: str, language: str | None = None) -> str:
+    safe_question = _sanitize_text(question)
+    safe_language = _sanitize_text(language or "the user's language", 80)
+    if not safe_question:
+        return "No research question provided."
+
+    trusted_domains = ", ".join(TRUSTED_LINK_DOMAINS)
+    prompt = f"""Answer this family chat question using web search when useful.
+
+Question: {safe_question}
+Preferred language: {safe_language}
+
+Rules:
+- Be concise and practical.
+- Include 1-3 source links when the answer depends on current or specific facts.
+- Only include HTTPS links from these known domains or their subdomains: {trusted_domains}
+- Never include HTTP links, shortened links, suspicious domains, forums, random blogs, or links you are not sure are real.
+- Say when the evidence is uncertain or when the answer may vary by location.
+- Do not mention internal tool use.
+- Do not give emergency medical/legal/financial advice; suggest a professional for high-stakes decisions."""
+
+    try:
+        response = OpenAI(api_key=os.environ.get("OPENAI_API_KEY")).responses.create(
+            model=RESEARCH_MODEL,
+            tools=[{"type": "web_search_preview"}],
+            input=prompt,
+        )
+        result = _extract_response_text(response)
+        return _strip_untrusted_links(result) if result else "I couldn't find a solid answer from search."
+    except Exception as e:
+        logger.error("Research failed: %s", e)
+        return "Research failed. Answer cautiously from general knowledge or ask the user to try again."
+
+
+def _parse_event_start(event: dict, tz: ZoneInfo) -> datetime | None:
+    raw = event.get("start", {}).get("dateTime", event.get("start", {}).get("date", ""))
+    if not raw:
+        return None
+    try:
+        if "T" in raw:
+            return datetime.fromisoformat(raw).astimezone(tz)
+        return datetime.fromisoformat(raw).replace(tzinfo=tz)
+    except ValueError:
+        return None
+
+
+def _format_event_for_recommendation(event: dict, tz: ZoneInfo) -> str:
+    start = _parse_event_start(event, tz)
+    title = event.get("summary", "(no title)")
+    if start is None:
+        return f"- {title}"
+    raw = event.get("start", {}).get("dateTime", event.get("start", {}).get("date", ""))
+    if "T" not in raw:
+        return f"- all day: {title}"
+    return f"- {start.strftime('%a %b %d, %I:%M %p').lstrip('0')}: {title}"
+
+
+def _recommend_for_calendar(start_date: str, end_date: str, focus: str | None = None) -> str:
+    tz = ZoneInfo(os.environ.get("TIMEZONE", "America/Toronto"))
+    start = datetime.fromisoformat(start_date).replace(tzinfo=tz)
+    end = datetime.fromisoformat(end_date).replace(tzinfo=tz)
+    events = get_events(start, end)
+
+    if not events:
+        return "No events found. Recommend protecting the open time and asking if the family wants reminders, errands, or meal planning added."
+
+    rules_path = Path(__file__).parent.parent / "config" / "rules.yaml"
+    with open(rules_path) as f:
+        rules = yaml.safe_load(f)
+
+    sports_keywords = rules["event_types"]["sports"]["keywords"]
+    exam_keywords = rules["event_types"]["exam"]["keywords"]
+    grocery_keywords = rules["event_types"]["grocery"]["keywords"]
+    pickup_keywords = rules["event_types"]["pickup_required"]["keywords"]
+
+    lines = ["Calendar facts:"]
+    lines.extend(_format_event_for_recommendation(e, tz) for e in events)
+
+    recommendations: list[str] = []
+    timed_events = [(e, _parse_event_start(e, tz)) for e in events]
+    timed_events = [(e, s) for e, s in timed_events if s is not None]
+
+    for event, event_start in timed_events:
+        title = event.get("summary", "(no title)")
+        title_lower = title.lower()
+
+        if any(kw in title_lower for kw in pickup_keywords):
+            leave_by = event_start - timedelta(minutes=20)
+            recommendations.append(
+                f"For '{title}', assign pickup/drop-off and aim to leave by {leave_by.strftime('%I:%M %p').lstrip('0')}."
+            )
+        elif "T" in event.get("start", {}).get("dateTime", ""):
+            leave_by = event_start - timedelta(minutes=15)
+            recommendations.append(
+                f"For '{title}', keep a 15-minute buffer; target leaving by {leave_by.strftime('%I:%M %p').lstrip('0')} if travel is involved."
+            )
+
+        if any(kw in title_lower for kw in sports_keywords):
+            recommendations.append(f"Pack water, gear, snack, and a change of clothes for '{title}'.")
+        if any(kw in title_lower for kw in exam_keywords):
+            recommendations.append(f"For '{title}', do a short review the night before and prep breakfast/water early.")
+        if any(kw in title_lower for kw in grocery_keywords):
+            recommendations.append(f"Before '{title}', check the shopping list and add missing staples.")
+
+    for i, (first_event, first_start) in enumerate(timed_events):
+        first_end_raw = first_event.get("end", {}).get("dateTime")
+        if not first_end_raw:
+            continue
+        try:
+            first_end = datetime.fromisoformat(first_end_raw).astimezone(tz)
+        except ValueError:
+            continue
+        for second_event, second_start in timed_events[i + 1:]:
+            if second_start < first_end:
+                recommendations.append(
+                    f"Conflict risk: '{first_event.get('summary', '(no title)')}' overlaps with '{second_event.get('summary', '(no title)')}'."
+                )
+
+    enrichments = []
+    for event, _ in timed_events[:3]:
+        title = event.get("summary", "")
+        context = enrich_event(title, event.get("description", ""))
+        if context:
+            enrichments.append(f"{title}: {context}")
+
+    if not recommendations:
+        recommendations.append("No obvious conflicts. Suggest confirming transportation and adding reminders for anything important.")
+
+    result = lines + ["", "Recommendations:"] + [f"- {r}" for r in recommendations[:8]]
+    if enrichments:
+        result += ["", "Useful context:"] + [f"- {item}" for item in enrichments[:3]]
+    if focus:
+        result.append(f"\nUser focus: {_sanitize_text(focus, 160)}")
+    return "\n".join(result)
 
 
 def _conflict_note(new_title: str, start: datetime, end: datetime, new_event_id: str) -> str:
@@ -209,7 +479,9 @@ def handle_tool_call(tool_name: str, tool_input: dict) -> str:
         for e in events:
             time = e["start"].get("dateTime", e["start"].get("date", "all-day"))
             event_id = e.get("id", "unknown")
-            lines.append(f"- [id:{event_id}] {time}: {e.get('summary', '(no title)')}")
+            link = e.get("htmlLink")
+            link_text = f" Open in Google Calendar: {link}" if _is_trusted_https_url(link or "") else ""
+            lines.append(f"- [id:{event_id}] {time}: {e.get('summary', '(no title)')}.{link_text}")
         return "\n".join(lines)
 
     if tool_name == "create_calendar_event":
@@ -222,7 +494,9 @@ def handle_tool_call(tool_name: str, tool_input: dict) -> str:
             description=tool_input.get("description", ""),
             rrule=tool_input.get("rrule"),
         )
-        confirmation = f"Event created: '{event.get('summary')}' on {start.strftime('%A %b %d at %I:%M %p')}."
+        link = event.get("htmlLink")
+        link_text = f" Open in Google Calendar: {link}" if _is_trusted_https_url(link or "") else ""
+        confirmation = f"Event created: '{event.get('summary')}' on {start.strftime('%A %b %d at %I:%M %p')}.{link_text}"
         conflict = _conflict_note(tool_input["title"], start, end, event.get("id", ""))
         return confirmation + conflict
 
@@ -278,5 +552,18 @@ def handle_tool_call(tool_name: str, tool_input: dict) -> str:
         if action == "clear":
             write_shopping_list([], event)
             return "Shopping list cleared."
+
+    if tool_name == "research_question":
+        return _research_question(
+            question=tool_input["question"],
+            language=tool_input.get("language"),
+        )
+
+    if tool_name == "recommend_for_calendar":
+        return _recommend_for_calendar(
+            start_date=tool_input["start_date"],
+            end_date=tool_input["end_date"],
+            focus=tool_input.get("focus"),
+        )
 
     return f"Unknown tool: {tool_name}"
