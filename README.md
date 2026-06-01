@@ -87,6 +87,38 @@ To manually trigger the morning briefing or pre-event reminder for testing:
     uv run scripts/test_briefing.py
     uv run scripts/test_reminder.py
 
+## Deploy to Railway
+
+Juanito should run as one always-on Railway service. Do not run multiple replicas, because Telegram polling and scheduled reminders can duplicate messages.
+
+1. Push the repo to a private GitHub repository.
+2. In Railway, create a new project from that GitHub repo.
+3. Railway will use `railway.toml` and start the bot with:
+
+       uv run main.py
+
+4. Add these Railway variables:
+
+   | Variable | Description |
+   |---|---|
+   | TELEGRAM_BOT_TOKEN | Bot token from @BotFather |
+   | OPENAI_API_KEY | OpenAI API key |
+   | ANTHROPIC_API_KEY | Anthropic API key, if enrichment still uses it |
+   | GOOGLE_CALENDAR_ID | Family calendar ID |
+   | GOOGLE_CREDENTIALS_JSON | Full contents of local credentials.json |
+   | GOOGLE_TOKEN_JSON | Full contents of local token.json |
+   | FAMILY_CHAT_ID | Telegram family group chat ID |
+   | DARWIN_USER_ID | Darwin's Telegram user ID |
+   | WIFE_USER_ID | Wife's Telegram user ID |
+   | PAOLA_USER_ID | Paola's Telegram user ID |
+   | TIMEZONE | Example: America/Toronto |
+
+5. Set replicas to 1.
+6. Deploy, then check Railway logs for `Bot is running. Press Ctrl+C to stop.`
+7. Send `/today` in the Telegram group to confirm Juanito can read Google Calendar.
+
+Keep `.env`, `credentials.json`, and `token.json` out of GitHub. They are listed in `.gitignore`; Railway should receive their values only as variables.
+
 ## Project structure
 
     family-planner/

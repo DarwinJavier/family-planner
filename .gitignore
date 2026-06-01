@@ -4,6 +4,7 @@ credentials.json
 logs/*.log
 logs/*.log.*
 storage/proactivity_state.json
+storage/shopping_list.json
 __pycache__/
 .pytest_cache/
 .venv/

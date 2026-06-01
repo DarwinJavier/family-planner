@@ -1,5 +1,6 @@
 """OAuth 2.0 flow helpers for Google Calendar."""
 import os
+import json
 import logging
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -14,16 +15,35 @@ SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TOKEN_FILE = "token.json"
 
 
+def _running_on_railway() -> bool:
+    return bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
+
+
+def _load_credentials_from_env() -> Credentials | None:
+    token_json = os.environ.get("GOOGLE_TOKEN_JSON")
+    if not token_json:
+        return None
+    return Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
+
+
+def _build_oauth_flow():
+    credentials_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    if credentials_json:
+        return InstalledAppFlow.from_client_config(json.loads(credentials_json), SCOPES)
+
+    credentials_file = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
+    return InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
+
+
 def get_credentials() -> Credentials:
     """Return valid OAuth credentials, refreshing or re-authorising as needed.
 
     On first run this opens a browser window for Google consent.
     After that, token.json is reused and silently refreshed.
     """
-    creds: Credentials | None = None
-    credentials_file = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
+    creds = _load_credentials_from_env()
 
-    if os.path.exists(TOKEN_FILE):
+    if not creds and os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
 
     if not creds or not creds.valid:
@@ -39,11 +59,16 @@ def get_credentials() -> Credentials:
                 creds = None
 
         if not creds:
+            if _running_on_railway():
+                raise RuntimeError(
+                    "Google OAuth token is missing. Set GOOGLE_TOKEN_JSON in Railway "
+                    "using the contents of your local token.json file."
+                )
             logger.info("Starting Google OAuth consent flow.")
-            flow = InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
+            flow = _build_oauth_flow()
             creds = flow.run_local_server(port=0)
 
-        with open(TOKEN_FILE, "w") as token:
+        with open(TOKEN_FILE, "w", encoding="utf-8") as token:
             token.write(creds.to_json())
         logger.info("OAuth token saved to %s", TOKEN_FILE)
 
