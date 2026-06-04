@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from telegram.ext import Application, CallbackContext
+from config.env import get_env, require_env
 from gcal.client import get_events
 from agent.enrichment import enrich_event
 from storage.proactivity import (
@@ -27,11 +28,11 @@ _reminded_events: set[str] = set()
 
 
 def _family_chat_id() -> int:
-    return int(os.environ["FAMILY_CHAT_ID"])
+    return int(require_env("FAMILY_CHAT_ID"))
 
 
 def _tz() -> ZoneInfo:
-    return ZoneInfo(os.environ.get("TIMEZONE", "America/Toronto"))
+    return ZoneInfo(get_env("TIMEZONE", "America/Toronto"))
 
 
 def _load_rules() -> dict:

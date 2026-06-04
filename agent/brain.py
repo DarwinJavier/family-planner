@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from openai import OpenAI
 from dotenv import load_dotenv
 from agent.tools import TOOL_DEFINITIONS, handle_tool_call
+from config.env import get_env
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -59,9 +60,9 @@ La fecha y hora actual es: {current_datetime}. Usa siempre esta fecha cuando el 
 
 def _current_user_context(user_name: str | None, user_id: int | None) -> str:
     known_users = {
-        os.environ.get("DARWIN_USER_ID"): "Darwin, hombre, más de 40 años, Product Marketing en tecnología y telecomunicaciones",
-        os.environ.get("WIFE_USER_ID"): "Francis, mujer, menos de 40 años, farmacéutica",
-        os.environ.get("PAOLA_USER_ID"): "Paola, niña de 13 años, 8th grade, le gusta leer y basketball",
+        get_env("DARWIN_USER_ID"): "Darwin, hombre, más de 40 años, Product Marketing en tecnología y telecomunicaciones",
+        get_env("WIFE_USER_ID"): "Francis, mujer, menos de 40 años, farmacéutica",
+        get_env("PAOLA_USER_ID"): "Paola, niña de 13 años, 8th grade, le gusta leer y basketball",
     }
     user_id_str = str(user_id) if user_id is not None else None
     if user_id_str and known_users.get(user_id_str):
@@ -75,12 +76,39 @@ def _current_user_context(user_name: str | None, user_id: int | None) -> str:
 
 
 def _build_system_prompt(user_name: str | None = None, user_id: int | None = None) -> str:
-    tz = ZoneInfo(os.environ.get("TIMEZONE", "America/Toronto"))
+    tz = ZoneInfo(get_env("TIMEZONE", "America/Toronto"))
     now = datetime.now(tz).strftime("%A, %B %d %Y at %I:%M %p (%Z)")
     return _SYSTEM_PROMPT_TEMPLATE.format(
         current_datetime=now,
         current_user_context=_current_user_context(user_name, user_id),
     )
+
+
+def _message_to_dict(message) -> dict:
+    if isinstance(message, dict):
+        return message
+    data = {"role": getattr(message, "role", None), "content": getattr(message, "content", None)}
+    tool_calls = getattr(message, "tool_calls", None)
+    if tool_calls:
+        data["tool_calls"] = tool_calls
+    return data
+
+
+def _chat_only_history(messages: list) -> list[dict]:
+    """Keep only normal chat turns for memory.
+
+    Tool-call transcripts are valid only as tightly paired API messages. Once
+    history is trimmed, those pairs can break, so we do not persist them.
+    """
+    clean: list[dict] = []
+    for raw_message in messages:
+        message = _message_to_dict(raw_message)
+        role = message.get("role")
+        content = message.get("content")
+        if role not in {"user", "assistant"} or not content:
+            continue
+        clean.append({"role": role, "content": content})
+    return clean
 
 
 def process_message(
@@ -100,12 +128,12 @@ def process_message(
     Returns:
         A tuple of (reply_text, updated_history).
     """
-    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    client = OpenAI(api_key=get_env("OPENAI_API_KEY"))
 
     # Prepend system prompt + append new user turn
     messages = (
         [{"role": "system", "content": _build_system_prompt(user_name, user_id)}]
-        + history
+        + _chat_only_history(history)
         + [{"role": "user", "content": user_message}]
     )
 
@@ -128,7 +156,7 @@ def process_message(
         if finish_reason == "stop":
             reply = message.content or "(no response)"
             # Return history without the system prompt prefix
-            updated_history = messages[1:]
+            updated_history = _chat_only_history(messages[1:])
             return reply, updated_history
 
         if finish_reason == "tool_calls":

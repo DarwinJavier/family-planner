@@ -12,6 +12,7 @@ import re
 import logging
 from openai import OpenAI
 from dotenv import load_dotenv
+from config.env import get_env
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ _NO_ENRICHMENT = "NO_ENRICHMENT"
 # ---------------------------------------------------------------------------
 
 def _client() -> OpenAI:
-    return OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    return OpenAI(api_key=get_env("OPENAI_API_KEY"))
 
 
 def _sanitize(text: str, max_length: int = 300) -> str:

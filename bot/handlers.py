@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from agent.brain import process_message
+from config.env import get_env, require_env
 from storage.memory import get_history, append_history
 from storage.proactivity import record_conversation_turn
 from bot.commands import cmd_today, cmd_week, cmd_list, cmd_help
@@ -14,14 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 def _family_chat_id() -> int:
-    chat_id = os.environ.get("FAMILY_CHAT_ID")
-    if not chat_id:
-        raise RuntimeError("FAMILY_CHAT_ID is not set in .env")
-    return int(chat_id)
+    return int(require_env("FAMILY_CHAT_ID"))
 
 
 def _tz() -> ZoneInfo:
-    return ZoneInfo(os.environ.get("TIMEZONE", "America/Toronto"))
+    return ZoneInfo(get_env("TIMEZONE", "America/Toronto"))
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -63,9 +61,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 def build_application() -> Application:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set in .env")
+    token = require_env("TELEGRAM_BOT_TOKEN")
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("today", cmd_today))
