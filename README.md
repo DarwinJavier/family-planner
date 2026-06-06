@@ -14,6 +14,7 @@ A shared AI assistant for the Hernandez family that connects Google Calendar to 
 - **Conflict detection:** When a new event is created, Juanito checks for time overlaps and flags pickup logistics for kids activities.
 - **Slash commands:** /today, /week, /list, /help for quick access without typing a full message.
 - **Bilingual:** Juanito follows whoever is writing — English gets a reply in English with Venezuelan flavour, Spanish gets full venezolano.
+- **Image understanding:** Send a photo or image document in Telegram and Juanito can read invitations, schedules, flyers, and other useful details. Event details still require confirmation before being added.
 
 ## Prerequisites
 

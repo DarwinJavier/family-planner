@@ -2,6 +2,7 @@
 import os
 import asyncio
 import html
+import math
 import yaml
 import logging
 from datetime import datetime, timedelta
@@ -66,8 +67,26 @@ def _event_label(event: dict) -> str:
     return title
 
 
-def _build_reminder(event_title: str, event_type: str | None, start: datetime, enrichment: str = "") -> str:
+def _time_until(start: datetime, now: datetime) -> str:
+    minutes = max(0, math.ceil((start - now).total_seconds() / 60))
+    hours, remaining_minutes = divmod(minutes, 60)
+    if hours and remaining_minutes:
+        return f"{hours} h {remaining_minutes} min"
+    if hours:
+        return f"{hours} h"
+    return f"{remaining_minutes} min"
+
+
+def _build_reminder(
+    event_title: str,
+    event_type: str | None,
+    start: datetime,
+    enrichment: str = "",
+    now: datetime | None = None,
+) -> str:
+    now = now or datetime.now(start.tzinfo)
     time_str = start.strftime("%I:%M %p").lstrip("0")
+    countdown = _time_until(start, now)
 
     if event_type == "sports":
         tips = enrichment or (
@@ -77,7 +96,7 @@ def _build_reminder(event_title: str, event_type: str | None, start: datetime, e
             "• Lleva tu equipo completo"
         )
         return (
-            f"🏃 *{event_title}* es en menos de una hora ({time_str}), chamo!\n\n"
+            f"🏃 *{event_title}* empieza en {countdown} ({time_str}), chamo!\n\n"
             f"Calentamiento rápido:\n{tips}\n\n"
             f"_¡Arréchate y a darlo todo!_ 💪🇻🇪"
         )
@@ -90,21 +109,21 @@ def _build_reminder(event_title: str, event_type: str | None, start: datetime, e
             "• Lee bien cada pregunta antes de responder"
         )
         return (
-            f"📚 *{event_title}* es en menos de una hora ({time_str})!\n\n"
+            f"📚 *{event_title}* empieza en {countdown} ({time_str})!\n\n"
             f"Tips de último momento:\n{tips}\n\n"
             f"_¡Tú sabes esto, pana! A brillar!_ ⭐"
         )
 
     if event_type == "grocery":
         return (
-            f"🛒 *{event_title}* en menos de una hora ({time_str})!\n\n"
+            f"🛒 *{event_title}* empieza en {countdown} ({time_str})!\n\n"
             f"No olvides revisar la lista antes de salir. "
             f"_(La lista de compras llega en la próxima versión de Juanito 😎)_"
         )
 
     # Generic reminder — append enrichment if available
     base = (
-        f"⏰ Recordatorio: *{event_title}* empieza a las {time_str}.\n"
+        f"⏰ Recordatorio: *{event_title}* empieza en {countdown}, a las {time_str}.\n"
         f"_¡Épale, no llegues tarde que eso no se ve bien!_ 😄"
     )
     if enrichment:
@@ -290,7 +309,7 @@ async def pre_event_check(context: CallbackContext) -> None:
 
         enrichment = await asyncio.to_thread(enrich_event, title, event_description)
 
-        message = _build_reminder(title, event_type, start, enrichment)
+        message = _build_reminder(title, event_type, start, enrichment, now=now)
 
         try:
             await context.bot.send_message(

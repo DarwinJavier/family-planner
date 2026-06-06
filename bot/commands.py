@@ -152,6 +152,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  • Add, edit, or delete calendar events\n"
         "  • Ask what's coming up\n"
         "  • Add items to the shopping list\n"
+        "  • Read images, invitations, and schedule screenshots\n"
         "  • Get smart reminders before events\n\n"
         "_Hablo español e inglés, chamo. Escríbeme como quieras!_ 🇻🇪"
     )

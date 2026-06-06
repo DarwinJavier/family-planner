@@ -80,7 +80,8 @@ TOOL_DEFINITIONS = [
             "name": "create_calendar_event",
             "description": (
                 "Create a new event on the family Google Calendar. "
-                "Always confirm with the user before calling this tool."
+                "Call this as soon as the user asks to schedule an event. "
+                "The application enforces confirmation before the write is executed."
             ),
             "parameters": {
                 "type": "object",
@@ -118,7 +119,7 @@ TOOL_DEFINITIONS = [
             "name": "delete_calendar_event",
             "description": (
                 "Delete an existing event from the family Google Calendar by its ID. "
-                "Always confirm with the user before calling this tool. "
+                "Call this after finding the event. The application enforces confirmation before deletion. "
                 "Use read_calendar first to find the event ID."
             ),
             "parameters": {
@@ -144,7 +145,7 @@ TOOL_DEFINITIONS = [
             "description": (
                 "Edit an existing event on the family Google Calendar. "
                 "Only the fields you provide will be changed — omit fields you want to keep. "
-                "Always confirm with the user before calling this tool. "
+                "Call this after finding the event. The application enforces confirmation before updating. "
                 "Use read_calendar first to find the event ID."
             ),
             "parameters": {

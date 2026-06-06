@@ -2,6 +2,8 @@
 import os
 import json
 import logging
+import re
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from openai import OpenAI
@@ -14,6 +16,13 @@ logger = logging.getLogger(__name__)
 
 MODEL = "gpt-4o"
 MAX_TOKENS = 4096
+WRITE_TOOLS = {
+    "create_calendar_event",
+    "delete_calendar_event",
+    "update_calendar_event",
+}
+PENDING_WRITE_TTL_SECONDS = 30 * 60
+_pending_writes: dict[int, tuple[str, dict, float]] = {}
 
 _SYSTEM_PROMPT_TEMPLATE = """Eres Juanito, el asistente personal de la familia Hernandez. Naciste en Venezuela y tienes toda la sazón del Caribe en la sangre.
 
@@ -50,8 +59,7 @@ Reglas de trabajo:
 - Puedes compartir links útiles, pero solo si son páginas HTTPS de fuentes conocidas y confiables. Nunca mandes links HTTP, acortadores, dominios raros, páginas sospechosas, ni enlaces inventados.
 - Si la pregunta depende del calendario familiar, lee el calendario primero. Si piden preparación, recomendaciones, prioridades, o logística, usa la herramienta de recomendaciones del calendario.
 - Cuando des consejos, separa claramente los hechos de tus sugerencias. No presentes corazonadas como certeza.
-- Antes de crear o modificar cualquier evento en el calendario, SIEMPRE confirma primero.
-  Ejemplo: "Oye pana, ¿te anoto el dentista de Paola el lunes a las 3pm o qué?"
+- Para crear, modificar o borrar eventos, llama la herramienta correcta apenas entiendas la solicitud. La aplicación detendrá la escritura y te devolverá instrucciones para pedir confirmación antes de ejecutarla.
 - Nunca muestres errores técnicos en el chat — si algo falla, dilo con gracia y sigue pa'lante.
 - Paola es menor de edad — todo el contenido con ella debe ser completamente apropiado.
 
@@ -78,10 +86,17 @@ def _current_user_context(user_name: str | None, user_id: int | None) -> str:
 def _build_system_prompt(user_name: str | None = None, user_id: int | None = None) -> str:
     tz = ZoneInfo(get_env("TIMEZONE", "America/Toronto"))
     now = datetime.now(tz).strftime("%A, %B %d %Y at %I:%M %p (%Z)")
-    return _SYSTEM_PROMPT_TEMPLATE.format(
+    prompt = _SYSTEM_PROMPT_TEMPLATE.format(
         current_datetime=now,
         current_user_context=_current_user_context(user_name, user_id),
     )
+    return prompt + """
+
+Additional reliability rules:
+- When the user asks to create, edit, or delete a calendar event, immediately call the correct tool with all available details. The application will pause the write and require confirmation. Do not merely say that you can do it.
+- Do not repeat the same catchphrases, greetings, jokes, or endings. Vary your rhythm and wording according to the situation while keeping the same warm personality.
+- When an image is provided, first describe or extract the useful information. If it contains event details, propose the event and use the normal confirmation flow.
+"""
 
 
 def _message_to_dict(message) -> dict:
@@ -94,6 +109,22 @@ def _message_to_dict(message) -> dict:
     return data
 
 
+def _history_content(content) -> str | None:
+    """Convert multimodal turns to compact text before saving conversation memory."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return None
+
+    text_parts = [
+        part.get("text", "")
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    ]
+    caption = " ".join(part.strip() for part in text_parts if part.strip())
+    return f"[Image sent] {caption}".strip()
+
+
 def _chat_only_history(messages: list) -> list[dict]:
     """Keep only normal chat turns for memory.
 
@@ -104,15 +135,83 @@ def _chat_only_history(messages: list) -> list[dict]:
     for raw_message in messages:
         message = _message_to_dict(raw_message)
         role = message.get("role")
-        content = message.get("content")
+        content = _history_content(message.get("content"))
         if role not in {"user", "assistant"} or not content:
             continue
         clean.append({"role": role, "content": content})
     return clean
 
 
+def _plain_user_text(user_message: str | list[dict]) -> str:
+    if isinstance(user_message, str):
+        return user_message.strip()
+    return " ".join(
+        part.get("text", "")
+        for part in user_message
+        if isinstance(part, dict) and part.get("type") == "text"
+    ).strip()
+
+
+def _is_affirmative(text: str) -> bool:
+    return bool(re.fullmatch(
+        r"\s*(yes|yep|yeah|confirm|confirmed|do it|go ahead|please do|"
+        r"s[ií]|confirmo|confirma|hazlo|dale|de acuerdo|claro)\s*[.!]?\s*",
+        text,
+        flags=re.IGNORECASE,
+    ))
+
+
+def _is_negative(text: str) -> bool:
+    return bool(re.fullmatch(
+        r"\s*(no|nope|cancel|never mind|nevermind|don't|do not|"
+        r"cancela|cancelar|olvídalo|olvidalo|mejor no)\s*[.!]?\s*",
+        text,
+        flags=re.IGNORECASE,
+    ))
+
+
+def _confirmation_instruction(tool_name: str, tool_input: dict) -> str:
+    if tool_name == "create_calendar_event":
+        return (
+            "CONFIRMATION REQUIRED. Ask the user whether to create "
+            f"'{tool_input.get('title')}' from {tool_input.get('start_datetime')} "
+            f"to {tool_input.get('end_datetime')}. Do not say it was created."
+        )
+    if tool_name == "update_calendar_event":
+        return (
+            "CONFIRMATION REQUIRED. Briefly summarize the requested event changes "
+            "and ask the user to confirm. Do not say it was updated."
+        )
+    return (
+        f"CONFIRMATION REQUIRED. Ask the user whether to delete "
+        f"'{tool_input.get('title', 'this event')}'. Do not say it was deleted."
+    )
+
+
+def _append_direct_turn(history: list[dict], user_text: str, reply: str) -> list[dict]:
+    return (_chat_only_history(history) + [
+        {"role": "user", "content": user_text},
+        {"role": "assistant", "content": reply},
+    ])[-20:]
+
+
+def _set_pending_write(user_id: int, tool_name: str, tool_input: dict) -> None:
+    _pending_writes[user_id] = (tool_name, tool_input, time.monotonic())
+
+
+def _get_pending_write(user_id: int) -> tuple[str, dict] | None:
+    pending = _pending_writes.get(user_id)
+    if not pending:
+        return None
+    tool_name, tool_input, created_at = pending
+    if time.monotonic() - created_at > PENDING_WRITE_TTL_SECONDS:
+        _pending_writes.pop(user_id, None)
+        return None
+    return tool_name, tool_input
+
+
 def process_message(
-    user_message: str,
+    user_message: str | list[dict],
     history: list[dict],
     user_name: str | None = None,
     user_id: int | None = None,
@@ -128,6 +227,25 @@ def process_message(
     Returns:
         A tuple of (reply_text, updated_history).
     """
+    user_text = _plain_user_text(user_message)
+    pending_key = user_id if user_id is not None else 0
+    pending = _get_pending_write(pending_key)
+
+    if pending and _is_affirmative(user_text):
+        tool_name, tool_input = pending
+        _pending_writes.pop(pending_key, None)
+        try:
+            reply = handle_tool_call(tool_name, tool_input)
+        except Exception:
+            logger.exception("Confirmed calendar write failed: %s", tool_name)
+            reply = "I couldn't update the calendar just now. Please try again in a moment."
+        return reply, _append_direct_turn(history, user_text, reply)
+
+    if pending and _is_negative(user_text):
+        _pending_writes.pop(pending_key, None)
+        reply = "No problem, I won't change the calendar."
+        return reply, _append_direct_turn(history, user_text, reply)
+
     client = OpenAI(api_key=get_env("OPENAI_API_KEY"))
 
     # Prepend system prompt + append new user turn
@@ -142,6 +260,8 @@ def process_message(
         response = client.chat.completions.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
+            temperature=0.7,
+            frequency_penalty=0.25,
             tools=TOOL_DEFINITIONS,
             messages=messages,
         )
@@ -165,7 +285,11 @@ def process_message(
                 tool_name = tool_call.function.name
                 tool_input = json.loads(tool_call.function.arguments)
                 logger.info("Tool call: %s(%s)", tool_name, tool_input)
-                result = handle_tool_call(tool_name, tool_input)
+                if tool_name in WRITE_TOOLS:
+                    _set_pending_write(pending_key, tool_name, tool_input)
+                    result = _confirmation_instruction(tool_name, tool_input)
+                else:
+                    result = handle_tool_call(tool_name, tool_input)
                 logger.info("Tool result: %s", result)
                 messages.append({
                     "role": "tool",
