@@ -46,6 +46,8 @@ TRUSTED_LINK_DOMAINS = [
     "openai.com",
     "microsoft.com",
     "apple.com",
+    "ottawaisnotboring.com",
+    "facebook.com",
 ]
 
 # Tool schemas in OpenAI function-calling format.
@@ -207,6 +209,86 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "research_shopping_prices",
+            "description": (
+                "Research current Canadian retailer prices for explicit items or the current family shopping list. "
+                "Use this when the family asks where an item is cheaper, what something costs, or for shopping-list price comparisons."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Items to research. Omit or pass an empty list to research the current shopping list.",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "Shopping location, default Ottawa, Ontario.",
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "The user's price request, including any retailer or place they mentioned.",
+                    },
+                    "preferred_retailers": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "costco", "walmart", "superstore", "loblaws", "metro", "sobeys",
+                                "amazon", "best buy", "canadian tire", "home depot", "rona", "staples", "ikea",
+                            ],
+                        },
+                        "description": "Retailers explicitly requested by the user, in priority order.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_opportunities",
+            "description": (
+                "Run Opportunity Scout to find a small number of realistic local activities "
+                "that fit the family calendar, preferences, travel limits, and budget."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum recommendations to return, from 1 to 5.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_opportunity",
+            "description": (
+                "Save, dismiss, or prepare a specific Opportunity Scout recommendation for the calendar. "
+                "For action 'add', use the returned event details to call create_calendar_event."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["save", "dismiss", "more_like", "add"]},
+                    "activity_id": {"type": "string"},
+                    "reason": {
+                        "type": "string",
+                        "enum": ["dismissed", "not_relevant", "too_expensive", "too_far", "wrong_age", "wrong_time"],
+                    },
+                },
+                "required": ["action", "activity_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "research_question",
             "description": (
                 "Research a factual question with web search before answering. "
@@ -319,6 +401,9 @@ Preferred language: {safe_language}
 
 Rules:
 - Be concise and practical.
+- If the user names a company, retailer, venue, organization, or website, prioritize its official site before broader sources.
+- Verify that every linked page directly supports the claim beside it. Prefer a specific product, event, policy, or detail page over a homepage, search page, or category page.
+- When an official source cannot verify a claim, clearly label it as uncertain instead of presenting it as fact.
 - Include 1-3 source links when the answer depends on current or specific facts.
 - Only include HTTPS links from these known domains or their subdomains: {trusted_domains}
 - Never include HTTP links, shortened links, suspicious domains, forums, random blogs, or links you are not sure are real.
@@ -498,6 +583,10 @@ def handle_tool_call(tool_name: str, tool_input: dict) -> str:
         link = event.get("htmlLink")
         link_text = f" Open in Google Calendar: {link}" if _is_trusted_https_url(link or "") else ""
         confirmation = f"Event created: '{event.get('summary')}' on {start.strftime('%A %b %d at %I:%M %p')}.{link_text}"
+        opportunity_match = re.search(r"opportunity_id:\s*([^\s]+)", tool_input.get("description", ""))
+        if opportunity_match:
+            from opportunity.service import accept_recommendation
+            accept_recommendation(opportunity_match.group(1))
         conflict = _conflict_note(tool_input["title"], start, end, event.get("id", ""))
         return confirmation + conflict
 
@@ -553,6 +642,69 @@ def handle_tool_call(tool_name: str, tool_input: dict) -> str:
         if action == "clear":
             write_shopping_list([], event)
             return "Shopping list cleared."
+
+    if tool_name == "research_shopping_prices":
+        from storage.price_research import research_prices
+
+        items = tool_input.get("items") or []
+        if not items:
+            items, event = read_shopping_list()
+            if event is None:
+                return "No grocery event or shopping list was found. Ask which items the user wants priced."
+        return research_prices(
+            items,
+            tool_input.get("location", "Ottawa, Ontario"),
+            context=tool_input.get("context", ""),
+            preferred_retailers=tool_input.get("preferred_retailers"),
+        )
+
+    if tool_name == "find_opportunities":
+        from opportunity.service import discover_recommendations, format_recommendations
+
+        limit = min(5, max(1, int(tool_input.get("limit", 5))))
+        recommendations, warnings = discover_recommendations(limit=limit)
+        return format_recommendations(recommendations, warnings)
+
+    if tool_name == "manage_opportunity":
+        from opportunity.service import (
+            build_calendar_proposal,
+            dismiss_recommendation,
+            recommend_more_like,
+            save_recommendation,
+        )
+
+        activity_id = tool_input["activity_id"]
+        action = tool_input["action"]
+        if action == "save":
+            recommendation = save_recommendation(activity_id)
+            return (
+                f"Saved '{recommendation.activity.title}' for later."
+                if recommendation
+                else "Recommendation not found. Run Opportunity Scout again."
+            )
+        if action == "dismiss":
+            recommendation = dismiss_recommendation(activity_id, tool_input.get("reason", "dismissed"))
+            return (
+                f"Dismissed '{recommendation.activity.title}' and recorded the feedback."
+                if recommendation
+                else "Recommendation not found. Run Opportunity Scout again."
+            )
+        if action == "more_like":
+            recommendation = recommend_more_like(activity_id)
+            return (
+                f"Recorded a preference for more activities like '{recommendation.activity.title}'."
+                if recommendation
+                else "Recommendation not found. Run Opportunity Scout again."
+            )
+        proposal = build_calendar_proposal(activity_id)
+        if not proposal:
+            return "Recommendation not found. Run Opportunity Scout again."
+        event_input, conflicts = proposal
+        warning = f" Conflicts before confirmation: {', '.join(conflicts)}." if conflicts else ""
+        return (
+            "Call create_calendar_event with these exact arguments so the application asks for confirmation: "
+            f"{event_input}.{warning}"
+        )
 
     if tool_name == "research_question":
         return _research_question(

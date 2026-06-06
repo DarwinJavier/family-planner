@@ -1,0 +1,26 @@
+sources:
+  - name: Ottawa Is Not Boring
+    url: https://ottawaisnotboring.com/
+    kind: editorial_lead
+    enabled: true
+    reliability: medium
+    notes: Use as a discovery lead. Verify date, price, registration, and availability on the official event page.
+
+  - name: Ottawa community Facebook groups
+    url: https://www.facebook.com/groups/
+    kind: community_lead
+    enabled: false
+    reliability: low
+    notes: Do not scrape or bypass login. Use only public content or posts explicitly shared by the family, then verify with an official source.
+
+  - name: City of Ottawa recreation
+    url: https://ottawa.ca/en/recreation-and-parks
+    kind: official
+    enabled: true
+    reliability: high
+
+  - name: Ottawa Public Library programs
+    url: https://biblioottawalibrary.ca/en/program
+    kind: official
+    enabled: true
+    reliability: high

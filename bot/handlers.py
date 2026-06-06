@@ -9,7 +9,21 @@ from agent.brain import process_message
 from config.env import get_env, require_env
 from storage.memory import get_history, append_history
 from storage.proactivity import record_conversation_turn
-from bot.commands import cmd_today, cmd_week, cmd_list, cmd_help
+from bot.commands import (
+    cmd_help,
+    cmd_list,
+    cmd_prices,
+    cmd_scout,
+    cmd_scout_add,
+    cmd_scout_dismiss,
+    cmd_scout_hide,
+    cmd_scout_interest,
+    cmd_scout_more,
+    cmd_scout_preferences,
+    cmd_scout_save,
+    cmd_today,
+    cmd_week,
+)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -103,7 +117,16 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("today", cmd_today))
     app.add_handler(CommandHandler("week", cmd_week))
     app.add_handler(CommandHandler("list", cmd_list))
+    app.add_handler(CommandHandler("prices", cmd_prices))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("scout", cmd_scout))
+    app.add_handler(CommandHandler("scout_add", cmd_scout_add))
+    app.add_handler(CommandHandler("scout_save", cmd_scout_save))
+    app.add_handler(CommandHandler("scout_dismiss", cmd_scout_dismiss))
+    app.add_handler(CommandHandler("scout_more", cmd_scout_more))
+    app.add_handler(CommandHandler("scout_preferences", cmd_scout_preferences))
+    app.add_handler(CommandHandler("scout_interest", cmd_scout_interest))
+    app.add_handler(CommandHandler("scout_hide", cmd_scout_hide))
     message_filter = (filters.TEXT & ~filters.COMMAND) | filters.PHOTO | filters.Document.IMAGE
     app.add_handler(MessageHandler(message_filter, handle_message))
     logger.info("Telegram application built.")

@@ -1,0 +1,29 @@
+availability:
+  planning_days: 14
+  day_start: "09:00"
+  day_end: "19:30"
+  minimum_useful_minutes: 120
+  preparation_minutes: 20
+  default_travel_minutes: 20
+  maximum_commitments_per_day: 3
+  protected_periods:
+    - name: Sunday family dinner
+      weekdays: [6]
+      start: "17:00"
+      end: "20:00"
+    - name: Daily recovery time
+      weekdays: [0, 1, 2, 3, 4, 5, 6]
+      start: "12:00"
+      end: "13:00"
+
+scoring:
+  calendar_fit: 35
+  interest_match: 22
+  age_suitability: 12
+  travel: 10
+  cost: 8
+  confidence: 8
+  novelty: 5
+
+recommendations:
+  default_limit: 5

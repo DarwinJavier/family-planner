@@ -96,6 +96,8 @@ Additional reliability rules:
 - When the user asks to create, edit, or delete a calendar event, immediately call the correct tool with all available details. The application will pause the write and require confirmation. Do not merely say that you can do it.
 - Do not repeat the same catchphrases, greetings, jokes, or endings. Vary your rhythm and wording according to the situation while keeping the same warm personality.
 - When an image is provided, first describe or extract the useful information. If it contains event details, propose the event and use the normal confirmation flow.
+- When the family asks about prices, cheaper stores, deals, or the cost of shopping-list items, use the shopping-price research tool instead of guessing. Pass the user's retailer/place context and prioritize any retailer they named.
+- Ottawa Is Not Boring is a useful local discovery lead. Facebook groups may also provide leads, but do not treat community posts as verified facts; verify dates, prices, and registration with an official source when possible.
 """
 
 
@@ -197,6 +199,11 @@ def _append_direct_turn(history: list[dict], user_text: str, reply: str) -> list
 
 def _set_pending_write(user_id: int, tool_name: str, tool_input: dict) -> None:
     _pending_writes[user_id] = (tool_name, tool_input, time.monotonic())
+
+
+def queue_calendar_write(user_id: int, tool_input: dict) -> None:
+    """Queue a calendar creation request for the normal confirmation flow."""
+    _set_pending_write(user_id, "create_calendar_event", tool_input)
 
 
 def _get_pending_write(user_id: int) -> tuple[str, dict] | None:

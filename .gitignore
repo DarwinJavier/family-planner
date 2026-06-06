@@ -5,6 +5,9 @@ logs/*.log
 logs/*.log.*
 storage/proactivity_state.json
 storage/shopping_list.json
+data/opportunity_preferences.json
+data/opportunity_state.json
+data/shopping_price_cache.json
 __pycache__/
 .pytest_cache/
 .venv/
