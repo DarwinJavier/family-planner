@@ -4,9 +4,10 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 from dotenv import load_dotenv
 from agent.tools import TOOL_DEFINITIONS, handle_tool_call
 from config.env import get_env
@@ -155,11 +156,25 @@ def _plain_user_text(user_message: str | list[dict]) -> str:
 
 
 def _is_affirmative(text: str) -> bool:
+    normalized = unicodedata.normalize("NFKD", text.casefold())
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    normalized = re.sub(r"[^\w\s']", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
     return bool(re.fullmatch(
-        r"\s*(yes|yep|yeah|confirm|confirmed|do it|go ahead|please do|"
-        r"s[ií]|confirmo|confirma|hazlo|dale|de acuerdo|claro)\s*[.!]?\s*",
-        text,
-        flags=re.IGNORECASE,
+        r"(?:"
+        r"(?:yes|yep|yeah|correct|confirm|confirmed|sure|absolutely)"
+        r"(?: please)?(?: and)?(?: go ahead| do it| add it| create it| schedule it)?"
+        r"|that's correct|looks good"
+        r"|go ahead(?: and)?(?: do it| add it| create it| schedule it)?"
+        r"|please do|do it|add it|create it|schedule it"
+        r"|(?:si|confirmo|confirma|correcto|claro|dale)"
+        r"(?: por favor)?(?: y)?(?: adelante| hazlo| agregalo| crealo| programalo)?"
+        r"|esta correcto|se ve bien"
+        r"|adelante(?: y)?(?: hazlo| agregalo| crealo| programalo)?"
+        r"|por favor hazlo|hazlo|agregalo|crealo|programalo"
+        r")",
+        normalized,
     ))
 
 
@@ -195,6 +210,23 @@ def _append_direct_turn(history: list[dict], user_text: str, reply: str) -> list
         {"role": "user", "content": user_text},
         {"role": "assistant", "content": reply},
     ])[-20:]
+
+
+def _quota_exhausted_reply(user_text: str) -> str:
+    spanish_markers = re.search(
+        r"\b(hola|epale|qué|que|cómo|como|por favor|gracias|sí|si|dale)\b",
+        user_text,
+        flags=re.IGNORECASE,
+    )
+    if spanish_markers:
+        return (
+            "Épale, mis créditos de OpenAI se agotaron y no puedo pensar ahorita. "
+            "Darwin tiene que recargar o aumentar el límite de la API de OpenAI."
+        )
+    return (
+        "My OpenAI API credits are exhausted, so I can't answer right now. "
+        "Darwin needs to add credits or increase the OpenAI API limit."
+    )
 
 
 def _set_pending_write(user_id: int, tool_name: str, tool_input: dict) -> None:
@@ -264,14 +296,21 @@ def process_message(
 
     # Agentic loop — keeps running until the model stops requesting tool calls
     while True:
-        response = client.chat.completions.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            temperature=0.7,
-            frequency_penalty=0.25,
-            tools=TOOL_DEFINITIONS,
-            messages=messages,
-        )
+        try:
+            response = client.chat.completions.create(
+                model=MODEL,
+                max_tokens=MAX_TOKENS,
+                temperature=0.7,
+                frequency_penalty=0.25,
+                tools=TOOL_DEFINITIONS,
+                messages=messages,
+            )
+        except RateLimitError as error:
+            if getattr(error, "code", None) != "insufficient_quota":
+                raise
+            logger.error("OpenAI API quota exhausted.")
+            reply = _quota_exhausted_reply(user_text)
+            return reply, _append_direct_turn(history, user_text, reply)
 
         message = response.choices[0].message
         finish_reason = response.choices[0].finish_reason

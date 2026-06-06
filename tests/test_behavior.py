@@ -1,9 +1,11 @@
 import json
 import unittest
+import httpx
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
+from openai import RateLimitError
 
 from agent import brain
 from scheduler.jobs import _build_reminder, _time_until
@@ -48,6 +50,85 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(reply, "Event created: Dentist")
         self.assertNotIn(user_id, brain._pending_writes)
         self.assertEqual(history[-1]["content"], "Event created: Dentist")
+
+    def test_common_affirmative_phrases_execute_without_asking_again(self):
+        pending_input = {
+            "title": "Dentist",
+            "start_datetime": "2026-06-08T15:00:00",
+            "end_datetime": "2026-06-08T16:00:00",
+        }
+
+        for user_id, confirmation in enumerate(
+            [
+                "yes please",
+                "yes, please create it",
+                "looks good",
+                "go ahead and add it",
+                "sí, por favor",
+                "dale, agrégalo",
+            ],
+            start=1000,
+        ):
+            with self.subTest(confirmation=confirmation):
+                brain._set_pending_write(user_id, "create_calendar_event", pending_input)
+                with (
+                    patch("agent.brain.handle_tool_call", return_value="Event created: Dentist") as tool,
+                    patch("agent.brain.OpenAI") as openai,
+                ):
+                    reply, _ = brain.process_message(confirmation, [], user_id=user_id)
+
+                tool.assert_called_once_with("create_calendar_event", pending_input)
+                openai.assert_not_called()
+                self.assertEqual(reply, "Event created: Dentist")
+                self.assertNotIn(user_id, brain._pending_writes)
+
+    def test_affirmative_with_requested_change_does_not_execute_pending_write(self):
+        user_id = 2000
+        brain._set_pending_write(
+            user_id,
+            "create_calendar_event",
+            {
+                "title": "Dentist",
+                "start_datetime": "2026-06-08T15:00:00",
+                "end_datetime": "2026-06-08T16:00:00",
+            },
+        )
+        response_message = SimpleNamespace(role="assistant", content="Okay, changing it to 4 PM.", tool_calls=None)
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=lambda **kwargs: SimpleNamespace(
+                        choices=[SimpleNamespace(message=response_message, finish_reason="stop")]
+                    )
+                )
+            )
+        )
+
+        with patch("agent.brain.OpenAI", return_value=client), patch("agent.brain.handle_tool_call") as tool:
+            brain.process_message("yes, but change it to 4 PM", [], user_id=user_id)
+
+        tool.assert_not_called()
+
+    def test_quota_exhaustion_returns_actionable_reply(self):
+        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        response = httpx.Response(429, request=request)
+        error = RateLimitError(
+            "Quota exhausted",
+            response=response,
+            body={"code": "insufficient_quota"},
+        )
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **kwargs: (_ for _ in ()).throw(error))
+            )
+        )
+
+        with patch("agent.brain.OpenAI", return_value=client):
+            reply, history = brain.process_message("hello", [], user_id=3000)
+
+        self.assertIn("credits are exhausted", reply)
+        self.assertIn("increase the OpenAI API limit", reply)
+        self.assertEqual(history[-1]["content"], reply)
 
     def test_write_tool_is_held_until_confirmation(self):
         user_id = 789
